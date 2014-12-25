@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/coreos/rocket/app-container/discovery"
+	"github.com/appc/spec/discovery"
+	"github.com/appc/spec/schema/types"
 	"github.com/coreos/rocket/cas"
 )
 
@@ -22,6 +23,10 @@ var (
 		Run:     runFetch,
 	}
 )
+
+func init() {
+	commands = append(commands, cmdFetch)
+}
 
 func fetchURL(img string, ds *cas.Store) (string, error) {
 	rem := cas.NewRemote(img, []string{})
@@ -75,7 +80,7 @@ func runFetch(args []string) (exit int) {
 	}
 	root := filepath.Join(globalFlags.Dir, imgDir)
 	if err := os.MkdirAll(root, 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "fetch: error creating image directory: %v", err)
+		fmt.Fprintf(os.Stderr, "fetch: error creating image directory: %v\n", err)
 		return 1
 	}
 
@@ -84,10 +89,11 @@ func runFetch(args []string) (exit int) {
 	for _, img := range args {
 		hash, err := fetchImage(img, ds)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v", err)
+			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 1
 		}
-		fmt.Println(hash)
+		shortHash := types.ShortHash(hash)
+		fmt.Println(shortHash)
 	}
 
 	return

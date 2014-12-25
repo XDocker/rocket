@@ -1,3 +1,5 @@
+//+build linux
+
 package main
 
 import (
@@ -6,10 +8,9 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/coreos/rocket/app-container/schema/types"
+	"github.com/appc/spec/schema/types"
 	"github.com/coreos/rocket/cas"
 	"github.com/coreos/rocket/stage0"
 )
@@ -29,6 +30,7 @@ They will be checked in that order and the first match will be used.`,
 )
 
 func init() {
+	commands = append(commands, cmdRun)
 	cmdRun.Flags.StringVar(&flagStage1Init, "stage1-init", "", "path to stage1 binary override")
 	cmdRun.Flags.StringVar(&flagStage1Rootfs, "stage1-rootfs", "", "path to stage1 rootfs tarball override")
 	cmdRun.Flags.Var(&flagVolumes, "volume", "volumes to mount into the shared container environment")
@@ -37,34 +39,52 @@ func init() {
 
 // findImages will recognize a ACI hash and use that, import a local file, use
 // discovery or download an ACI directly.
-func findImages(args []string, ds *cas.Store) (out []string, err error) {
-	out = make([]string, len(args))
-	copy(out, args)
+func findImages(args []string, ds *cas.Store) (out []types.Hash, err error) {
+	out = make([]types.Hash, len(args))
 	for i, img := range args {
 		// check if it is a valid hash, if so let it pass through
-		_, err := types.NewHash(img)
+		h, err := types.NewHash(img)
 		if err == nil {
+			fullKey, err := ds.ResolveKey(img)
+			if err != nil {
+				return nil, fmt.Errorf("could not resolve key: %v", err)
+			}
+			h, err = types.NewHash(fullKey)
+			if err != nil {
+				// should never happen
+				panic(err)
+			}
+			out[i] = *h
 			continue
 		}
 
 		// import the local file if it exists
 		file, err := os.Open(img)
 		if err == nil {
-			hash := types.NewHashSHA256([]byte(img)).String()
-			key, err := ds.WriteACI(hash, file)
+			key, err := ds.WriteACI(file)
 			file.Close()
 			if err != nil {
 				return nil, fmt.Errorf("%s: %v", img, err)
 			}
-			out[i] = key
+			h, err := types.NewHash(key)
+			if err != nil {
+				// should never happen
+				panic(err)
+			}
+			out[i] = *h
 			continue
 		}
 
-		hash, err := fetchImage(img, ds)
+		key, err := fetchImage(img, ds)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = hash
+		h, err = types.NewHash(key)
+		if err != nil {
+			// should never happen
+			panic(err)
+		}
+		out[i] = *h
 	}
 
 	return out, nil
@@ -75,13 +95,12 @@ func runRun(args []string) (exit int) {
 		fmt.Fprintf(os.Stderr, "run: Must provide at least one image\n")
 		return 1
 	}
-	gdir := globalFlags.Dir
-	if gdir == "" {
+	if globalFlags.Dir == "" {
 		log.Printf("dir unset - using temporary directory")
 		var err error
-		gdir, err = ioutil.TempDir("", "rkt")
+		globalFlags.Dir, err = ioutil.TempDir("", "rkt")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error creating temporary directory: %v", err)
+			fmt.Fprintf(os.Stderr, "error creating temporary directory: %v\n", err)
 			return 1
 		}
 	}
@@ -89,22 +108,20 @@ func runRun(args []string) (exit int) {
 	ds := cas.NewStore(globalFlags.Dir)
 	imgs, err := findImages(args, ds)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s", err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return 1
 	}
 
-	// TODO(jonboulle): use rkt/path
-	cdir := filepath.Join(gdir, "containers")
 	cfg := stage0.Config{
 		Store:         ds,
-		ContainersDir: cdir,
+		ContainersDir: containersDir(),
 		Debug:         globalFlags.Debug,
 		Stage1Init:    flagStage1Init,
 		Stage1Rootfs:  flagStage1Rootfs,
 		Images:        imgs,
 		Volumes:       flagVolumes,
 	}
-	cdir, err = stage0.Setup(cfg)
+	cdir, err := stage0.Setup(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "run: error setting up stage0: %v\n", err)
 		return 1
